@@ -59,10 +59,13 @@
 </div>
 
 <style>
-  .chat-input-container {
     background: #fff;
     border-top: 1px solid #e5e5e5;
     padding: 12px 16px;
+    flex-shrink: 0;
+    /* Keep above messages on mobile */
+    position: relative;
+    z-index: 30;
     flex-shrink: 0;
   }
 
@@ -137,6 +140,41 @@
     font-size: 11px;
     color: #999;
     margin: 4px 16px 0 16px;
+
+  /* Mobile optimizations */
+  @media (max-width: 640px) {
+    .chat-input-container {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: env(safe-area-inset-bottom, 0);
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0));
+      box-shadow: 0 -6px 20px rgba(0,0,0,0.08);
+      border-top-left-radius: 12px;
+      border-top-right-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), #fff);
+    }
+
+    .input-wrapper {
+      gap: 10px;
+      align-items: center;
+    }
+
+    textarea {
+      font-size: 16px;
+      padding: 12px 14px;
+      min-height: 44px;
+      border-radius: 18px;
+    }
+
+    .send-btn {
+      width: 42px;
+      height: 42px;
+      font-size: 20px;
+    }
+
+    .hint { display: none; }
+  }
   }
 
   @media (prefers-color-scheme: dark) {

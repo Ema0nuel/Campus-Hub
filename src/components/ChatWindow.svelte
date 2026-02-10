@@ -391,6 +391,13 @@
     gap: 8px;
   }
 
+  /* Reserve space for fixed chat input on mobile */
+  @media (max-width: 640px) {
+    .messages-container {
+      padding-bottom: calc(140px + env(safe-area-inset-bottom, 0));
+    }
+  }
+
   /* Mobile: make messages use full width and reduce padding */
   @media (max-width: 640px) {
     .messages-container {

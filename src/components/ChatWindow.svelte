@@ -391,17 +391,10 @@
     gap: 8px;
   }
 
-  /* Reserve space for fixed chat input on mobile */
+  /* Mobile: tighter layout with space for fixed input */
   @media (max-width: 640px) {
     .messages-container {
-      padding-bottom: calc(140px + env(safe-area-inset-bottom, 0));
-    }
-  }
-
-  /* Mobile: make messages use full width and reduce padding */
-  @media (max-width: 640px) {
-    .messages-container {
-      padding: 10px;
+      padding: 10px 10px calc(160px + env(safe-area-inset-bottom, 0)) 10px;
       gap: 6px;
     }
 

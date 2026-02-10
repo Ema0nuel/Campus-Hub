@@ -263,6 +263,16 @@
     padding: 8px 0;
   }
 
+  /* Mobile tweaks */
+  @media (max-width: 640px) {
+    .chat-list-wrapper {
+      padding: 6px 0;
+    }
+    .conversation-item {
+      padding: 8px 12px;
+    }
+  }
+
   .error-message {
     display: flex;
     align-items: center;

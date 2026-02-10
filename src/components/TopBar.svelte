@@ -106,6 +106,26 @@
     z-index: 10;
   }
 
+  /* Mobile adjustments */
+  @media (max-width: 640px) {
+    .topbar {
+      padding: 12px 14px;
+    }
+    .title {
+      font-size: 16px;
+    }
+    .avatar,
+    .avatar-placeholder {
+      width: 36px;
+      height: 36px;
+    }
+    .dropdown-menu {
+      min-width: 140px;
+      right: 8px;
+      left: auto;
+    }
+  }
+
   .topbar-content {
     display: flex;
     align-items: center;

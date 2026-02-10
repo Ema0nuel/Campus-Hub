@@ -137,6 +137,23 @@
     z-index: 1;
   }
 
+  @media (max-width: 640px) {
+    .login-card {
+      padding: 20px;
+      margin: 16px;
+      border-radius: 12px;
+    }
+    .login-header h1 {
+      font-size: 22px;
+    }
+    .login-header p {
+      font-size: 13px;
+    }
+    .login-button {
+      padding: 12px;
+    }
+  }
+
   .login-header {
     text-align: center;
     margin-bottom: 32px;

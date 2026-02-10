@@ -391,6 +391,24 @@
     gap: 8px;
   }
 
+  /* Mobile: make messages use full width and reduce padding */
+  @media (max-width: 640px) {
+    .messages-container {
+      padding: 10px;
+      gap: 6px;
+    }
+
+    .chat-window-fullscreen {
+      top: 0;
+      bottom: 0;
+      height: 100vh;
+    }
+
+    .messages-list > * {
+      max-width: 100%;
+    }
+  }
+
   .messages-container::-webkit-scrollbar {
     width: 8px;
   }

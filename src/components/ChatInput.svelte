@@ -11,7 +11,6 @@
 
   function handleSend() {
     if (!messageText.trim() || disabled) return;
-
     dispatch("send", messageText);
     messageText = "";
     inputElement?.focus();
@@ -24,13 +23,9 @@
     }
   }
 
-  function expandTextarea(element) {
-    element.style.height = "auto";
-    element.style.height = Math.min(element.scrollHeight, 100) + "px";
-  }
-
   function handleInput(e) {
-    expandTextarea(e.target);
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px";
   }
 </script>
 
@@ -44,91 +39,82 @@
       placeholder="Type a message..."
       {disabled}
       rows="1"
+      aria-label="Message input"
     />
     <button
       on:click={handleSend}
       disabled={disabled || !messageText.trim()}
       class="send-btn"
-      title="Send message (Enter)"
+      title="Send (Enter)"
       aria-label="Send message"
     >
       ✈️
     </button>
   </div>
-  <p class="hint">Press Enter to send, Shift+Enter for new line</p>
+  <p class="hint">Enter to send · Shift+Enter for line break</p>
 </div>
 
 <style>
-    background: #fff;
-    border-top: 1px solid #e5e5e5;
-    padding: 12px 16px;
-    flex-shrink: 0;
-    /* Keep above messages on mobile */
-    position: relative;
-    z-index: 30;
-    flex-shrink: 0;
+  .chat-input-container {
+    background: linear-gradient(180deg, #ffffff, #fbfbfb);
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    padding: 10px 12px;
+    box-sizing: border-box;
   }
 
   .input-wrapper {
     display: flex;
     gap: 8px;
-    align-items: flex-end;
+    align-items: center;
   }
 
   textarea {
     flex: 1;
-    border: 1px solid #e5e5ea;
+    min-height: 44px;
+    max-height: 140px;
+    padding: 10px 14px;
     border-radius: 20px;
-    padding: 10px 16px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    background: #f7f7f8;
     font-size: 15px;
+    line-height: 1.2;
     font-family: inherit;
     resize: none;
-    max-height: 100px;
     outline: none;
-    transition: border-color 0.2s;
-    background: #f0f0f0;
-    color: #000;
-  }
-
-  textarea::placeholder {
-    color: #999;
+    transition: border-color 0.15s;
   }
 
   textarea:focus {
-    border-color: #0084ff;
+    border-color: #0b84ff;
     background: #fff;
   }
 
   textarea:disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     cursor: not-allowed;
-    background: #f5f5f5;
   }
 
   .send-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    border-radius: 999px;
     border: none;
-    background: #0084ff;
-    color: #fff;
-    cursor: pointer;
+    background: #0b84ff;
+    color: white;
+    display: inline-grid;
+    place-items: center;
     font-size: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.15s;
   }
 
   .send-btn:hover:not(:disabled) {
-    background: #0073e6;
-    transform: scale(1.08);
-    box-shadow: 0 2px 8px rgba(0, 132, 255, 0.3);
+    background: #0a73d8;
   }
 
   .send-btn:active:not(:disabled) {
-    transform: scale(0.95);
+    transform: scale(0.96);
   }
 
   .send-btn:disabled {
@@ -137,11 +123,13 @@
   }
 
   .hint {
-    font-size: 11px;
-    color: #999;
-    margin: 4px 16px 0 16px;
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.45);
+    margin-top: 6px;
+    margin-left: 14px;
+  }
 
-  /* Mobile optimizations */
+  /* Mobile: pin input to bottom, reserve space in messages */
   @media (max-width: 640px) {
     .chat-input-container {
       position: fixed;
@@ -149,57 +137,33 @@
       right: 0;
       bottom: env(safe-area-inset-bottom, 0);
       padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0));
-      box-shadow: 0 -6px 20px rgba(0,0,0,0.08);
-      border-top-left-radius: 12px;
-      border-top-right-radius: 12px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.98), #fff);
+      box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+      backdrop-filter: blur(4px);
     }
 
-    .input-wrapper {
-      gap: 10px;
-      align-items: center;
+    .hint {
+      display: none;
     }
-
-    textarea {
-      font-size: 16px;
-      padding: 12px 14px;
-      min-height: 44px;
-      border-radius: 18px;
-    }
-
-    .send-btn {
-      width: 42px;
-      height: 42px;
-      font-size: 20px;
-    }
-
-    .hint { display: none; }
-  }
   }
 
   @media (prefers-color-scheme: dark) {
     .chat-input-container {
-      background: #222;
-      border-top-color: #333;
+      background: linear-gradient(180deg, #111, #0b0b0b);
+      border-top-color: rgba(255, 255, 255, 0.03);
     }
 
     textarea {
-      background: #333;
-      color: #fff;
-      border-color: #444;
-    }
-
-    textarea::placeholder {
-      color: #666;
+      background: #121212;
+      color: #eee;
+      border-color: rgba(255, 255, 255, 0.04);
     }
 
     textarea:focus {
-      border-color: #0084ff;
-      background: #2a2a2a;
+      background: #1a1a1a;
     }
 
     .hint {
-      color: #666;
+      color: rgba(255, 255, 255, 0.55);
     }
   }
 </style>

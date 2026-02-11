@@ -1,7 +1,7 @@
 <!-- filepath: c:\Users\emas0\OneDrive\Documents\practice\2026\Campus Hub\src\components\ChatWindow.svelte -->
 <script>
   // @ts-nocheck
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, onDestroy } from "svelte";
   import {
     getUnifiedMessages,
     getCurrentUserId,
@@ -13,6 +13,12 @@
     messages as messagesStore,
   } from "../stores/socketStore.js";
   import { on as socketOn, off as socketOff } from "../lib/socketClient.js";
+  import {
+    subscribeToTypingIndicators,
+    unsubscribeFromChannel,
+  } from "../lib/supabaseClient.js";
+  import { supabase } from "../lib/supabaseClient.js";
+  import { formatAdjustedTime } from "../lib/timeUtils.js";
   import MessageBubble from "../components/MessageBubble.svelte";
   import ChatInput from "../components/ChatInput.svelte";
   import ChatHeader from "../components/ChatHeader.svelte";
@@ -23,6 +29,7 @@
   export let participantId = "";
   export let participantName = "User";
   export let participantPhone = "";
+  export let participantAvatar = "";
 
   let currentUserId = "";
   let messages = [];
@@ -32,6 +39,9 @@
   let participantConversationId = "";
   let error = "";
   let isSending = false;
+  let isParticipantTyping = false;
+  let typingTimeoutId = null;
+  let typingSubscription = null;
 
   /**
    * Load unified messages from BOTH conversations
@@ -157,6 +167,102 @@
         tick().then(() => scrollToBottom());
       }
     });
+
+    // Listen for typing indicator events
+    socketOn("typing_indicator", (data) => {
+      console.log("[ChatWindow] ✏️ Typing indicator received:", data);
+      if (data.userId !== currentUserId) {
+        setParticipantTyping(true);
+      }
+    });
+
+    socketOn("typing_stop", (data) => {
+      console.log("[ChatWindow] ✋ Typing stopped:", data);
+      if (data.userId !== currentUserId) {
+        setParticipantTyping(false);
+      }
+    });
+  }
+
+  /**
+   * Subscribe to real-time typing indicators from typing_indicators table
+   */
+  function subscribeToConversationTyping() {
+    console.log("[ChatWindow] 📡 Subscribing to typing indicators table");
+
+    try {
+      if (!userConversationId || !participantConversationId) {
+        console.warn(
+          "[ChatWindow] ⚠️ Conversation IDs not ready for typing subscription",
+        );
+        return;
+      }
+
+      // Subscribe to both conversation IDs in typing_indicators table
+      const channel = supabase
+        .channel(`typing:${userConversationId}:${participantConversationId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "typing_indicators",
+            filter: `conversation_id=eq.${userConversationId}`,
+          },
+          (payload) => {
+            console.log("[ChatWindow] 📝 Typing event from table:", payload);
+            handleTypingIndication(payload);
+          },
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "typing_indicators",
+            filter: `conversation_id=eq.${participantConversationId}`,
+          },
+          (payload) => {
+            console.log(
+              "[ChatWindow] 📝 Typing event from participant conv:",
+              payload,
+            );
+            handleTypingIndication(payload);
+          },
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            console.log("[ChatWindow] ✅ Typing subscription active");
+          }
+        });
+
+      typingSubscription = channel;
+    } catch (err) {
+      console.error("[ChatWindow] ❌ Failed to subscribe to typing:", err);
+    }
+  }
+
+  function handleTypingIndication(payload) {
+    const { new: newData, old: oldData, eventType } = payload;
+    const typingData = newData || oldData;
+
+    if (!typingData || typingData.user_id === currentUserId) {
+      return; // Ignore own typing
+    }
+
+    if (
+      eventType === "INSERT" ||
+      (eventType === "UPDATE" && newData?.is_typing)
+    ) {
+      console.log("[ChatWindow] ✏️ Participant typing...");
+      setParticipantTyping(true);
+    } else if (eventType === "UPDATE" && !newData?.is_typing) {
+      console.log("[ChatWindow] ✋ Participant stopped typing");
+      setParticipantTyping(false);
+    } else if (eventType === "DELETE") {
+      console.log("[ChatWindow] ✋ Typing indicator removed");
+      setParticipantTyping(false);
+    }
   }
 
   function scrollToBottom() {
@@ -164,6 +270,31 @@
       setTimeout(() => {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
       }, 0);
+    }
+  }
+
+  function handleTypingStart(event) {
+    const { conversationId } = event.detail;
+    console.log("[ChatWindow] ✏️ User typing...");
+    // Emit to parent or handle locally
+  }
+
+  function handleTypingStop(event) {
+    const { conversationId } = event.detail;
+    console.log("[ChatWindow] ✋ User stopped typing");
+  }
+
+  function setParticipantTyping(isTyping) {
+    isParticipantTyping = isTyping;
+
+    if (isTyping) {
+      if (typingTimeoutId) clearTimeout(typingTimeoutId);
+      // Auto-hide typing indicator after 5 seconds
+      typingTimeoutId = setTimeout(() => {
+        isParticipantTyping = false;
+      }, 5000);
+    } else {
+      if (typingTimeoutId) clearTimeout(typingTimeoutId);
     }
   }
 
@@ -183,10 +314,31 @@
     loadMessages();
     setupSocketListeners();
 
+    // Subscribe to typing indicators after messages load
+    setTimeout(() => {
+      subscribeToConversationTyping();
+    }, 500);
+
     // Cleanup listeners on unmount
     return () => {
       socketOff("message:received");
+      socketOff("typing_indicator");
+      socketOff("typing_stop");
+      if (typingSubscription) {
+        unsubscribeFromChannel(typingSubscription);
+      }
+      if (typingTimeoutId) clearTimeout(typingTimeoutId);
     };
+  });
+
+  onDestroy(() => {
+    socketOff("message:received");
+    socketOff("typing_indicator");
+    socketOff("typing_stop");
+    if (typingSubscription) {
+      unsubscribeFromChannel(typingSubscription);
+    }
+    if (typingTimeoutId) clearTimeout(typingTimeoutId);
   });
 
   // Reload when participant changes
@@ -200,6 +352,7 @@
   <ChatHeader
     name={participantName}
     phone={participantPhone}
+    avatarUrl={participantAvatar}
     onlineStatus={true}
     on:back={handleBack}
   />
@@ -234,12 +387,29 @@
                 5 * 60 * 1000}
           />
         {/each}
+        {#if isParticipantTyping}
+          <div class="typing-indicator">
+            <div class="typing-bubble">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <p class="typing-text">{participantName} is typing...</p>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
 
   <!-- Input - Always accessible -->
-  <ChatInput disabled={isSending} on:send={handleSendMessage} />
+  <ChatInput
+    disabled={isSending}
+    conversationId={userConversationId}
+    userId={currentUserId}
+    on:send={handleSendMessage}
+    on:typing-start={handleTypingStart}
+    on:typing-stop={handleTypingStop}
+  />
 </div>
 
 <style>
@@ -386,28 +556,74 @@
     gap: 4px;
   }
 
+  .typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    margin-top: 8px;
+  }
+
+  .typing-bubble {
+    display: flex;
+    gap: 4px;
+    background: #e5e5ea;
+    border-radius: 18px;
+    padding: 12px 16px;
+    min-height: 20px;
+  }
+
+  .typing-bubble span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #999;
+    animation: typing 1.4s infinite;
+  }
+
+  .typing-bubble span:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .typing-bubble span:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes typing {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.5;
+    }
+    30% {
+      transform: translateY(-10px);
+      opacity: 1;
+    }
+  }
+
+  .typing-text {
+    font-size: 12px;
+    color: #666;
+    margin: 0;
+    font-weight: 500;
+  }
+
   @media (prefers-color-scheme: dark) {
-    .chat-window-fullscreen {
-      background: #111;
-      color: #fff;
+    .messages-list {
+      gap: 4px;
     }
 
-    .messages-container {
-      background: linear-gradient(to bottom, #1a1a1a, #0d0d0d);
+    .typing-bubble {
+      background: #2c2c2e;
     }
 
-    .loading p,
-    .empty-state p,
-    .empty-state span {
+    .typing-bubble span {
+      background: #8e8e93;
+    }
+
+    .typing-text {
       color: #aaa;
-    }
-
-    .messages-container::-webkit-scrollbar-thumb {
-      background: #444;
-    }
-
-    .messages-container::-webkit-scrollbar-thumb:hover {
-      background: #666;
     }
   }
 

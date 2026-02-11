@@ -3,6 +3,7 @@
 
   import { createEventDispatcher, onMount, onDestroy } from "svelte";
   import { onUserPresence } from "../lib/socket.js";
+  import { getRelativeTime } from "../lib/timeUtils.js";
 
   export let conversation = null;
 
@@ -12,18 +13,6 @@
 
   function vibrate(pattern) {
     if (navigator.vibrate) navigator.vibrate(pattern);
-  }
-
-  function formatTime(timestamp) {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMinutes = Math.floor((now - date) / (1000 * 60));
-
-    if (diffMinutes < 1) return "now";
-    if (diffMinutes < 60) return `${diffMinutes}m`;
-    if (diffMinutes < 1440) return `${Math.floor(diffMinutes / 60)}h`;
-    if (diffMinutes < 10080) return `${Math.floor(diffMinutes / 1440)}d`;
-    return date.toLocaleDateString();
   }
 
   function handleSelect() {
@@ -72,7 +61,9 @@
   </div>
 
   <div class="conversation-meta">
-    <time class="timestamp">{formatTime(conversation?.last_message_at)}</time>
+    <time class="timestamp"
+      >{getRelativeTime(conversation?.last_message_at)}</time
+    >
     {#if conversation?.unread_count > 0}
       <span class="unread-badge">{conversation.unread_count}</span>
     {/if}

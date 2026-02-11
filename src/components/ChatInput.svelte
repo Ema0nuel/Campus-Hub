@@ -1,16 +1,25 @@
 <!-- filepath: c:\Users\emas0\OneDrive\Documents\practice\2026\Campus Hub\src\components\ChatInput.svelte -->
 <script>
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount, onDestroy } from "svelte";
+  import { setTypingIndicator } from "../services/supabaseService.js";
 
   const dispatch = createEventDispatcher();
 
   export let disabled = false;
+  export let conversationId = "";
+  export let userId = "";
 
   let messageText = "";
   let inputElement;
+  let isTyping = false;
+  let typingTimeoutId = null;
 
-  function handleSend() {
+  async function handleSend() {
     if (!messageText.trim() || disabled) return;
+
+    // Stop typing indicator before sending
+    await stopTyping();
+
     dispatch("send", messageText);
     messageText = "";
     inputElement?.focus();
@@ -24,9 +33,58 @@
   }
 
   function handleInput(e) {
+    // Auto-resize textarea
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px";
+
+    // Trigger typing indicator
+    startTyping();
   }
+
+  async function startTyping() {
+    if (!conversationId || !userId) return;
+
+    try {
+      if (!isTyping) {
+        isTyping = true;
+        // Write to typing_indicators table
+        await setTypingIndicator(userId, conversationId, true);
+        console.log("[ChatInput] ✏️ Marked as typing");
+      }
+
+      // Reset timeout for typing indicator (stop after 3 seconds of inactivity)
+      clearTimeout(typingTimeoutId);
+      typingTimeoutId = setTimeout(() => {
+        stopTyping();
+      }, 3000);
+    } catch (err) {
+      console.error("[ChatInput] Failed to set typing indicator:", err);
+    }
+  }
+
+  async function stopTyping() {
+    if (!conversationId || !userId) return;
+
+    try {
+      if (isTyping) {
+        isTyping = false;
+        // Remove typing indicator from table
+        await setTypingIndicator(userId, conversationId, false);
+        console.log("[ChatInput] ✋ Marked as not typing");
+      }
+      clearTimeout(typingTimeoutId);
+    } catch (err) {
+      console.error("[ChatInput] Failed to clear typing indicator:", err);
+    }
+  }
+
+  async function handleBlur() {
+    await stopTyping();
+  }
+
+  onDestroy(async () => {
+    await stopTyping();
+  });
 </script>
 
 <div class="chat-input-container">
@@ -36,6 +94,7 @@
       bind:value={messageText}
       on:keydown={handleKeydown}
       on:input={handleInput}
+      on:blur={handleBlur}
       placeholder="Type a message..."
       {disabled}
       rows="1"
@@ -48,122 +107,156 @@
       title="Send (Enter)"
       aria-label="Send message"
     >
-      ✈️
+      <span class="send-icon">➜</span>
     </button>
   </div>
-  <p class="hint">Enter to send · Shift+Enter for line break</p>
 </div>
 
 <style>
   .chat-input-container {
     background: linear-gradient(180deg, #ffffff, #fbfbfb);
     border-top: 1px solid rgba(0, 0, 0, 0.06);
-    padding: 10px 12px;
+    padding: 12px 12px;
     box-sizing: border-box;
+    flex-shrink: 0;
   }
 
   .input-wrapper {
     display: flex;
     gap: 8px;
-    align-items: center;
+    align-items: flex-end;
   }
 
   textarea {
     flex: 1;
     min-height: 44px;
     max-height: 140px;
-    padding: 10px 14px;
-    border-radius: 20px;
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    background: #f7f7f8;
+    padding: 11px 16px;
+    border-radius: 22px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #f0f2f5;
     font-size: 15px;
-    line-height: 1.2;
+    line-height: 1.4;
     font-family: inherit;
     resize: none;
     outline: none;
-    transition: border-color 0.15s;
+    transition: all 0.15s ease;
+    color: #000;
   }
 
   textarea:focus {
     border-color: #0b84ff;
     background: #fff;
+    box-shadow: 0 0 0 2px rgba(11, 132, 255, 0.1);
   }
 
   textarea:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    background: rgba(0, 0, 0, 0.05);
+  }
+
+  textarea::placeholder {
+    color: rgba(0, 0, 0, 0.5);
   }
 
   .send-btn {
     width: 44px;
     height: 44px;
     min-width: 44px;
-    border-radius: 999px;
+    flex-shrink: 0;
+    border-radius: 50%;
     border: none;
     background: #0b84ff;
     color: white;
-    display: inline-grid;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     font-size: 18px;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: all 0.15s ease;
+    position: relative;
+    overflow: hidden;
   }
 
   .send-btn:hover:not(:disabled) {
     background: #0a73d8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(11, 132, 255, 0.3);
   }
 
   .send-btn:active:not(:disabled) {
-    transform: scale(0.96);
+    transform: scale(0.95);
+    box-shadow: 0 2px 8px rgba(11, 132, 255, 0.2);
   }
 
   .send-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    background: #ccc;
   }
 
-  .hint {
-    font-size: 12px;
-    color: rgba(0, 0, 0, 0.45);
-    margin-top: 6px;
-    margin-left: 14px;
+  .send-icon {
+    display: inline-block;
+    transition: transform 0.2s ease;
   }
 
-  /* Mobile: pin input to bottom, reserve space in messages */
+  .send-btn:hover:not(:disabled) .send-icon {
+    transform: translateX(2px);
+  }
+
+  /* Mobile: Optimize for small screens */
   @media (max-width: 640px) {
     .chat-input-container {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: env(safe-area-inset-bottom, 0);
-      padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0));
-      box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
-      backdrop-filter: blur(4px);
-    }
-
-    .hint {
-      display: none;
-    }
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .chat-input-container {
-      background: linear-gradient(180deg, #111, #0b0b0b);
-      border-top-color: rgba(255, 255, 255, 0.03);
+      padding: 8px 8px;
+      position: sticky;
+      bottom: 0;
+      z-index: 100;
     }
 
     textarea {
-      background: #121212;
-      color: #eee;
-      border-color: rgba(255, 255, 255, 0.04);
+      padding: 10px 14px;
+      font-size: 14px;
+      min-height: 40px;
+      border-radius: 20px;
+    }
+
+    .send-btn {
+      width: 40px;
+      height: 40px;
+      min-width: 40px;
+    }
+  }
+
+  /* Dark mode support */
+  @media (prefers-color-scheme: dark) {
+    .chat-input-container {
+      background: linear-gradient(180deg, #1a1a1a, #0f0f0f);
+      border-top-color: rgba(255, 255, 255, 0.05);
+    }
+
+    textarea {
+      background: #2a2a2a;
+      color: #e8e8e8;
+      border-color: rgba(255, 255, 255, 0.06);
     }
 
     textarea:focus {
-      background: #1a1a1a;
+      background: #333;
+      border-color: #0b84ff;
+      box-shadow: 0 0 0 2px rgba(11, 132, 255, 0.15);
     }
 
-    .hint {
-      color: rgba(255, 255, 255, 0.55);
+    textarea:disabled {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    textarea::placeholder {
+      color: rgba(255, 255, 255, 0.45);
+    }
+
+    .send-btn:hover:not(:disabled) {
+      box-shadow: 0 4px 12px rgba(11, 132, 255, 0.25);
     }
   }
 </style>

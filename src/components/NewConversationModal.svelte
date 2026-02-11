@@ -2,7 +2,8 @@
   // @ts-nocheck
 
   import { createEventDispatcher } from "svelte";
-  import { createConversation, searchUserByPhone } from "../lib/api.js";
+  import { getUserByPhone, getOrCreateConversation } from "../services/supabaseService.js";
+  import { currentUserId } from "../store/authStore.js";
 
   const dispatch = createEventDispatcher();
 
@@ -12,6 +13,12 @@
   let error = "";
   let searchError = "";
   let step = "search"; // 'search' | 'confirm'
+  let userId = "";
+
+  // Subscribe to user ID
+  const unsubscribeUserId = currentUserId.subscribe((id) => {
+    userId = id;
+  });
 
   function vibrate(pattern) {
     if (navigator.vibrate) navigator.vibrate(pattern);
@@ -25,22 +32,39 @@
 
     loading = true;
     searchError = "";
+    error = "";
     vibrate([0, 20]);
 
     try {
-      const user = await searchUserByPhone(phoneInput);
+      console.log("[NewConversationModal] Searching for user:", phoneInput);
+
+      const user = await getUserByPhone(phoneInput);
+
       if (!user) {
-        searchError = "User not found";
+        searchError = "User not found with this phone number";
         searchedUser = null;
         vibrate([0, 10, 5, 10]);
-      } else {
-        searchedUser = user;
-        step = "confirm";
-        vibrate([0, 30, 50, 30]);
+        console.log("[NewConversationModal] User not found");
+        return;
       }
+
+      // Don't allow creating conversation with yourself
+      if (user.id === userId) {
+        searchError = "You cannot start a conversation with yourself";
+        searchedUser = null;
+        vibrate([0, 10, 5, 10]);
+        console.log("[NewConversationModal] Cannot chat with yourself");
+        return;
+      }
+
+      searchedUser = user;
+      step = "confirm";
+      vibrate([0, 30, 50, 30]);
+      console.log("[NewConversationModal] ✅ User found:", user.name);
     } catch (err) {
-      searchError = err.message;
+      searchError = err.message || "Search failed";
       vibrate([0, 10, 5, 10]);
+      console.error("[NewConversationModal] Search error:", err);
     } finally {
       loading = false;
     }
@@ -52,21 +76,32 @@
       return;
     }
 
+    if (!userId) {
+      error = "User not authenticated";
+      return;
+    }
+
     loading = true;
     error = "";
     vibrate([0, 20]);
 
     try {
-      const conversation = await createConversation(searchedUser.id);
+      console.log("[NewConversationModal] Creating conversation with:", searchedUser.id);
+
+      const conversation = await getOrCreateConversation(userId, searchedUser.id);
+
       if (!conversation?.id) {
         throw new Error("Failed to create conversation");
       }
 
+      console.log("[NewConversationModal] ✅ Conversation created:", conversation.id);
+
       vibrate([0, 30, 50, 30]);
       dispatch("created", { conversation });
     } catch (err) {
-      error = err.message;
+      error = err.message || "Failed to create conversation";
       vibrate([0, 10, 5, 10]);
+      console.error("[NewConversationModal] Create error:", err);
     } finally {
       loading = false;
     }
@@ -81,14 +116,21 @@
 
   function handleClose() {
     vibrate(8);
+    unsubscribeUserId();
     dispatch("close");
+  }
+
+  function handleKeyPress(e) {
+    if (e.key === "Enter" && step === "search" && !loading && phoneInput.trim()) {
+      handleSearch();
+    }
   }
 </script>
 
 <div class="modal-overlay" on:click={handleClose}>
   <div class="modal-card" on:click|stopPropagation>
     <div class="modal-header">
-      <h2>New Conversation</h2>
+      <h2>{step === "search" ? "New Conversation" : "Start Chat?"}</h2>
       <button class="close-btn" on:click={handleClose} aria-label="Close">
         <svg viewBox="0 0 24 24" width="24" height="24">
           <path
@@ -115,9 +157,11 @@
               type="tel"
               placeholder="+234 80123456789"
               bind:value={phoneInput}
+              on:keypress={handleKeyPress}
               disabled={loading}
-              inputmode="numeric"
+              inputmode="tel"
               class:error={!!searchError}
+              aria-label="Phone number input"
             />
             {#if searchError}
               <div class="error-text">{searchError}</div>
@@ -130,7 +174,7 @@
             disabled={loading || !phoneInput.trim()}
           >
             {#if loading}
-              <span class="spinner"></span>
+              <span class="spinner" />
               Searching...
             {:else}
               Search User
@@ -148,18 +192,18 @@
               />
             {:else}
               <div class="avatar-placeholder">
-                <svg viewBox="0 0 24 24" width="40" height="40">
-                  <path
-                    d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"
-                    fill="currentColor"
-                  />
-                </svg>
+                {searchedUser?.name?.charAt(0)?.toUpperCase() || "?"}
               </div>
             {/if}
-            <div class="user-info">
-              <h3>{searchedUser?.name || "Unknown"}</h3>
-              <p>{searchedUser?.phone_number}</p>
-            </div>
+
+            <h3 class="user-name">{searchedUser?.name || "Unknown"}</h3>
+            <p class="user-phone">{searchedUser?.phone_number}</p>
+
+            {#if searchedUser?.status}
+              <span class="user-status" class:online={searchedUser.status === "online"}>
+                {searchedUser.status === "online" ? "● Online" : "● Offline"}
+              </span>
+            {/if}
           </div>
 
           {#if error}
@@ -180,7 +224,7 @@
               disabled={loading}
             >
               {#if loading}
-                <span class="spinner"></span>
+                <span class="spinner" />
                 Creating...
               {:else}
                 Start Chat
@@ -202,38 +246,41 @@
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     justify-content: center;
-    z-index: 200;
-    padding: 0;
-    animation: fadeIn 0.2s ease;
+    padding: 16px;
+    z-index: 2000;
+    backdrop-filter: blur(2px);
+    animation: fadeIn 0.2s ease-out;
   }
 
   @keyframes fadeIn {
     from {
       opacity: 0;
+      backdrop-filter: blur(0);
     }
     to {
       opacity: 1;
+      backdrop-filter: blur(2px);
     }
   }
 
   .modal-card {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
     width: 100%;
-    max-width: 480px;
-    background: #ffffff;
-    border-radius: 16px 16px 0 0;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+    max-width: 400px;
+    max-height: 80vh;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    max-height: 90vh;
-    overflow: hidden;
-    animation: slideUp 0.3s ease;
+    animation: slideUp 0.3s ease-out;
   }
 
   @keyframes slideUp {
     from {
-      transform: translateY(100%);
+      transform: translateY(30px);
       opacity: 0;
     }
     to {
@@ -243,37 +290,39 @@
   }
 
   .modal-header {
-    padding: 20px 24px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
     display: flex;
-    align-items: center;
     justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   }
 
   .modal-header h2 {
     margin: 0;
     font-size: 18px;
     font-weight: 600;
-    color: #000000;
+    color: #000;
   }
 
   .close-btn {
-    width: 40px;
-    height: 40px;
-    padding: 0;
-    background: transparent;
+    background: none;
     border: none;
-    border-radius: 8px;
     cursor: pointer;
-    color: rgba(0, 0, 0, 0.6);
+    padding: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
+    color: #666;
+    border-radius: 6px;
+    transition: all 0.2s;
+  }
+
+  .close-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
   }
 
   .close-btn:active {
-    background: rgba(0, 0, 0, 0.05);
+    transform: scale(0.95);
   }
 
   .modal-content {
@@ -281,12 +330,22 @@
     padding: 24px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .search-step,
+  .confirm-step {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
   }
 
   .step-description {
-    margin: 0 0 24px;
+    margin: 0;
     font-size: 14px;
-    color: rgba(0, 0, 0, 0.6);
+    color: #666;
     line-height: 1.5;
   }
 
@@ -294,47 +353,46 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    margin-bottom: 20px;
   }
 
   .label {
     font-size: 13px;
     font-weight: 600;
-    color: #000000;
+    color: rgba(0, 0, 0, 0.7);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
-  input[type="tel"] {
-    padding: 14px 16px;
-    background: rgba(0, 0, 0, 0.04);
-    border: 1.5px solid rgba(0, 0, 0, 0.08);
+  input {
+    padding: 12px 16px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
     border-radius: 8px;
-    font-size: 16px;
-    font-weight: 500;
-    color: #000000;
-    transition: all 0.2s ease;
+    font-size: 15px;
+    outline: none;
+    transition: all 0.2s;
     font-family: inherit;
   }
 
-  input[type="tel"]:focus {
-    outline: none;
+  input:focus {
     border-color: #0084ff;
-    background: #ffffff;
     box-shadow: 0 0 0 2px rgba(0, 132, 255, 0.1);
+    background: #fff;
   }
 
-  input[type="tel"].error {
+  input.error {
     border-color: #ef4444;
   }
 
-  input[type="tel"]:disabled {
+  input:disabled {
+    background: rgba(0, 0, 0, 0.05);
+    cursor: not-allowed;
     opacity: 0.6;
   }
 
   .error-text {
     font-size: 12px;
     color: #ef4444;
+    font-weight: 500;
   }
 
   .error-message {
@@ -344,78 +402,86 @@
     border-radius: 8px;
     color: #ef4444;
     font-size: 13px;
-    margin-bottom: 16px;
+    font-weight: 500;
   }
 
   .user-card {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 16px;
-    padding: 16px;
-    background: rgba(0, 132, 255, 0.08);
+    gap: 12px;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.02);
     border-radius: 12px;
-    margin-bottom: 24px;
   }
 
   .user-avatar {
-    width: 56px;
-    height: 56px;
+    width: 80px;
+    height: 80px;
     border-radius: 50%;
     object-fit: cover;
   }
 
   .avatar-placeholder {
-    width: 56px;
-    height: 56px;
+    width: 80px;
+    height: 80px;
     border-radius: 50%;
-    background: linear-gradient(
-      135deg,
-      rgba(0, 132, 255, 0.2),
-      rgba(0, 115, 230, 0.2)
-    );
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: rgba(0, 132, 255, 0.6);
-    flex-shrink: 0;
-  }
-
-  .user-info {
-    flex: 1;
-  }
-
-  .user-info h3 {
-    margin: 0 0 4px;
-    font-size: 16px;
+    color: white;
+    font-size: 32px;
     font-weight: 600;
-    color: #000000;
   }
 
-  .user-info p {
+  .user-name {
     margin: 0;
-    font-size: 14px;
-    color: rgba(0, 0, 0, 0.6);
+    font-size: 18px;
+    font-weight: 600;
+    color: #000;
+  }
+
+  .user-phone {
+    margin: 0;
+    font-size: 13px;
+    color: #666;
+  }
+
+  .user-status {
+    font-size: 12px;
+    color: #999;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 12px;
+  }
+
+  .user-status.online {
+    color: #31a24c;
+    background: rgba(49, 162, 76, 0.1);
   }
 
   .action-btn {
-    width: 100%;
-    padding: 14px 16px;
+    padding: 12px 24px;
     border: none;
     border-radius: 8px;
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.2s;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    transition: all 0.2s ease;
-    min-height: 48px;
   }
 
   .primary-btn {
-    background: linear-gradient(135deg, #0084ff 0%, #0073e6 100%);
+    background: #0084ff;
     color: white;
+  }
+
+  .primary-btn:hover:not(:disabled) {
+    background: #0073e6;
   }
 
   .primary-btn:active:not(:disabled) {
@@ -423,23 +489,33 @@
   }
 
   .primary-btn:disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     cursor: not-allowed;
   }
 
   .secondary-btn {
-    background: rgba(0, 0, 0, 0.04);
-    color: #000000;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: transparent;
+    color: #0084ff;
+    border: 2px solid #0084ff;
+  }
+
+  .secondary-btn:hover:not(:disabled) {
+    background: rgba(0, 132, 255, 0.05);
   }
 
   .secondary-btn:active:not(:disabled) {
-    background: rgba(0, 0, 0, 0.08);
+    transform: scale(0.98);
+  }
+
+  .secondary-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .button-group {
     display: flex;
     gap: 12px;
+    width: 100%;
   }
 
   .button-group .action-btn {
@@ -453,12 +529,7 @@
     border: 2px solid rgba(255, 255, 255, 0.3);
     border-top-color: white;
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .secondary-btn .spinner {
-    border-color: rgba(0, 0, 0, 0.3);
-    border-top-color: #000000;
+    animation: spin 0.6s linear infinite;
   }
 
   @keyframes spin {
@@ -469,7 +540,7 @@
 
   @media (prefers-color-scheme: dark) {
     .modal-card {
-      background: #111111;
+      background: #1a1a1a;
     }
 
     .modal-header {
@@ -477,69 +548,91 @@
     }
 
     .modal-header h2 {
-      color: #ffffff;
+      color: #fff;
     }
 
     .close-btn {
-      color: rgba(255, 255, 255, 0.6);
+      color: #aaa;
     }
 
-    .close-btn:active {
-      background: rgba(255, 255, 255, 0.08);
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
     }
 
     .step-description {
-      color: rgba(255, 255, 255, 0.6);
+      color: #aaa;
     }
 
     .label {
-      color: rgba(255, 255, 255, 0.8);
+      color: rgba(255, 255, 255, 0.7);
     }
 
-    input[type="tel"] {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.12);
-      color: #ffffff;
+    input {
+      background: #2a2a2a;
+      border-color: rgba(255, 255, 255, 0.1);
+      color: #e8e8e8;
     }
 
-    input[type="tel"]:focus {
-      background: rgba(255, 255, 255, 0.04);
+    input:focus {
       border-color: #0084ff;
-      box-shadow: 0 0 0 2px rgba(0, 132, 255, 0.15);
+      background: #333;
+    }
+
+    input:disabled {
+      background: rgba(255, 255, 255, 0.02);
     }
 
     .user-card {
-      background: rgba(0, 132, 255, 0.1);
+      background: rgba(255, 255, 255, 0.05);
     }
 
-    .user-info h3 {
-      color: #ffffff;
+    .user-name {
+      color: #fff;
     }
 
-    .user-info p {
-      color: rgba(255, 255, 255, 0.6);
+    .user-phone {
+      color: #aaa;
     }
 
-    .secondary-btn {
-      background: rgba(255, 255, 255, 0.08);
-      color: #ffffff;
-      border-color: rgba(255, 255, 255, 0.12);
-    }
-
-    .secondary-btn:active:not(:disabled) {
-      background: rgba(255, 255, 255, 0.12);
+    .error-message {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
     }
   }
 
-  @media (min-width: 768px) {
+  @media (max-width: 640px) {
     .modal-overlay {
-      align-items: center;
-      padding: 24px;
+      padding: 0;
+      align-items: flex-end;
     }
 
     .modal-card {
-      border-radius: 16px;
-      max-height: 80vh;
+      border-radius: 16px 16px 0 0;
+      max-width: 100%;
+      max-height: 90vh;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .modal-content {
+      padding: 20px;
+    }
+
+    .action-btn {
+      width: 100%;
+    }
+
+    .button-group .action-btn {
+      flex: 1;
     }
   }
 </style>

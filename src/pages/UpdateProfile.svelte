@@ -4,19 +4,18 @@
   import { onMount, createEventDispatcher } from "svelte";
   import ProfileContainer from "../components/ProfileContainer.svelte";
   import TopBar from "../components/TopBar.svelte";
-  import AvatarPicker from "../components/AvatarPicker.svelte";
   import TextInput from "../components/TextInput.svelte";
   import PrimaryButton from "../components/PrimaryButton.svelte";
   import {
     updateUserProfile,
-    getUserProfile,
-    getCurrentUserId,
-  } from "../lib/api.js";
+    getUserById,
+  } from "../services/supabaseService.js";
   import {
     uploadAvatarToStorage,
     deleteAvatarFromStorage,
+    fileToBase64,
   } from "../hook/storeData.js";
-  import { currentUser } from "../store/authStore.js";
+  import { currentUserId, currentUser } from "../store/authStore.js";
 
   const dispatch = createEventDispatcher();
 
@@ -25,6 +24,7 @@
   let avatarUrl = "";
   let oldAvatarUrl = "";
   let avatarFile = null;
+  let avatarPreview = "";
   let loading = false;
   let initialLoading = true;
   let error = "";
@@ -32,6 +32,12 @@
   let nameError = "";
   let emailError = "";
   let hasChanges = false;
+  let userId = "";
+
+  // Subscribe to user ID
+  const unsubscribeUserId = currentUserId.subscribe((id) => {
+    userId = id;
+  });
 
   // Auto-subscription to store
   $: currentUserData = $currentUser;
@@ -49,21 +55,23 @@
     try {
       initialLoading = true;
       error = "";
-      const userId = getCurrentUserId();
 
       if (!userId) {
         throw new Error("User ID not found. Please login again.");
       }
 
-      const user = await getUserProfile(userId);
+      console.log("[UpdateProfile] Loading profile for:", userId.slice(0, 8));
+
+      const user = await getUserById(userId);
 
       name = user.name || "";
       email = user.email || "";
       avatarUrl = user.avatar_url || "";
+      avatarPreview = user.avatar_url || "";
       oldAvatarUrl = user.avatar_url || "";
 
-      console.log("[UpdateProfile] Loaded user data:", {
-        userId: user.id,
+      console.log("[UpdateProfile] ✅ Profile loaded:", {
+        userId: user.id?.slice(0, 8),
         name: user.name,
         email: user.email,
       });
@@ -88,10 +96,29 @@
   }
 
   function handleAvatarSelect(e) {
-    const file = e.detail.file;
-    const preview = e.detail.preview;
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      error = "Only JPEG, PNG, and WebP images are supported";
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      error = "Image must be smaller than 5MB";
+      return;
+    }
+
     avatarFile = file;
-    avatarUrl = preview;
+    error = "";
+
+    // Create preview
+    fileToBase64(file).then((preview) => {
+      avatarPreview = preview;
+    });
+
     vibrate([0, 15, 10, 15]);
     checkForChanges();
   }
@@ -121,8 +148,9 @@
     try {
       let finalAvatarUrl = avatarUrl;
 
+      // Handle avatar upload/delete
       if (avatarFile) {
-        const userId = getCurrentUserId();
+        console.log("[UpdateProfile] Uploading new avatar...");
         const { url, error: uploadError } = await uploadAvatarToStorage(
           avatarFile,
           userId,
@@ -134,7 +162,8 @@
 
         finalAvatarUrl = url;
 
-        if (oldAvatarUrl && oldAvatarUrl !== url) {
+        // Delete old avatar if it exists and is different
+        if (oldAvatarUrl && oldAvatarUrl !== finalAvatarUrl) {
           try {
             await deleteAvatarFromStorage(oldAvatarUrl, userId);
             console.log("[UpdateProfile] Old avatar deleted");
@@ -147,43 +176,28 @@
         }
       }
 
-      const updatedUser = await updateUserProfile({
+      // Update profile in Supabase
+      console.log("[UpdateProfile] Updating user profile...");
+      const updatedUser = await updateUserProfile(userId, {
         name: name.trim(),
         email: email.trim(),
         avatar_url: finalAvatarUrl,
       });
 
       if (updatedUser && updatedUser.id) {
-        const userData = {
-          id: updatedUser.id,
-          name: updatedUser.name,
-          email: updatedUser.email,
-          avatar_url: updatedUser.avatar_url,
-          phone_number: updatedUser.phone_number,
-        };
+        console.log("[UpdateProfile] ✅ Profile updated successfully");
 
-        // WORKAROUND: Update localStorage directly, then reload currentUser from store
-        localStorage.setItem("user", JSON.stringify(userData));
-
-        // Force store re-subscription by reading fresh from localStorage
-        const stored = JSON.parse(localStorage.getItem("user"));
-        currentUser.set(stored);
-
-        oldAvatarUrl = finalAvatarUrl;
+        // Clear avatar file to prevent re-upload
         avatarFile = null;
-        hasChanges = false;
-        loading = false;
-
         success = "Profile updated successfully!";
         vibrate([0, 30, 50, 30]);
 
-        console.log("[UpdateProfile] Profile updated successfully:", userData);
-
+        // Wait a moment before closing
         setTimeout(() => {
           dispatch("close");
         }, 1500);
       } else {
-        throw new Error("Profile update failed: Invalid response");
+        throw new Error("Update failed: no user data returned");
       }
     } catch (err) {
       error = err.message || "Profile update failed";
@@ -199,9 +213,8 @@
   }
 
   function handleBack() {
-    window.location.href = "/conversations";
-    vibrate(8);
     dispatch("close");
+    vibrate(8);
   }
 
   function handleKeyPress(e) {
@@ -219,7 +232,14 @@
   }
 
   onMount(() => {
-    loadUserProfile();
+    console.log("[UpdateProfile] 🎬 Mounted");
+    if (userId) {
+      loadUserProfile();
+    }
+
+    return () => {
+      unsubscribeUserId();
+    };
   });
 </script>
 
@@ -229,108 +249,108 @@
 
     {#if initialLoading}
       <div class="loading-state">
-        <div class="spinner"></div>
+        <div class="spinner" />
         <p>Loading profile...</p>
       </div>
     {:else}
       <form on:submit|preventDefault={handleSubmit} class="profile-form">
         <div class="form-content">
-          <AvatarPicker {avatarUrl} on:avatarSelect={handleAvatarSelect} />
+          <!-- Avatar Section -->
+          <div class="avatar-section">
+            <div class="avatar-placeholder">
+              {#if avatarPreview}
+                <img src={avatarPreview} alt="Your avatar" class="avatar-image" />
+              {:else}
+                <div class="avatar-default">👤</div>
+              {/if}
+            </div>
+            <button
+              type="button"
+              class="upload-btn"
+              on:click={() => document.querySelector(".avatar-input")?.click()}
+              disabled={loading}
+            >
+              {avatarPreview || avatarUrl ? "Change Photo" : "Add Photo"}
+            </button>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              on:change={handleAvatarSelect}
+              disabled={loading}
+              class="avatar-input"
+              hidden
+            />
+          </div>
 
+          <!-- Name Input (Required) -->
           <TextInput
             label="Full Name"
-            placeholder="John Doe"
+            placeholder="Enter your name"
             value={name}
             error={nameError}
             disabled={loading}
             on:change={handleNameChange}
-            on:focus={() => vibrate(10)}
             on:keypress={handleKeyPress}
           />
 
+          <!-- Email Input (Required) -->
           <TextInput
             label="Email Address"
             type="email"
-            placeholder="john@example.com"
+            placeholder="Enter your email"
             value={email}
             error={emailError}
             disabled={loading}
             on:change={handleEmailChange}
-            on:focus={() => vibrate(10)}
             on:keypress={handleKeyPress}
           />
 
+          <!-- Error Message -->
           {#if error}
             <div class="error-message" role="alert">
               <svg viewBox="0 0 24 24" width="16" height="16">
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                />
-                <path
-                  d="M12 8v4M12 16h.01"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                />
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+                <path d="M12 8v4m0 4v.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
               </svg>
               {error}
             </div>
           {/if}
 
+          <!-- Success Message -->
           {#if success}
             <div class="success-message" role="status">
               <svg viewBox="0 0 24 24" width="16" height="16">
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                />
                 <path
-                  d="M9 12l2 2 4-4"
+                  d="M9 16.2L4.8 12m0 0-1.4-1.4m1.4 1.4L9 19m7-7v7a2 2 0 01-2 2H7a2 2 0 01-2-2V9"
                   stroke="currentColor"
                   stroke-width="2"
                   stroke-linecap="round"
-                  stroke-linejoin="round"
                 />
               </svg>
               {success}
             </div>
           {/if}
-
-          <PrimaryButton
-            label={loading ? "Updating..." : "Save Changes"}
-            {loading}
-            disabled={loading ||
-              !name ||
-              !email ||
-              !!nameError ||
-              !!emailError ||
-              !hasChanges}
-            on:click={handleSubmit}
-          />
-
-          <button
-            type="button"
-            class="secondary-button"
-            disabled={loading}
-            on:click={handleBack}
-          >
-            Cancel
-          </button>
         </div>
 
         <div class="form-footer">
+          <div class="button-group">
+            <button
+              type="button"
+              class="secondary-button"
+              on:click={handleBack}
+              disabled={loading}
+            >
+              Cancel
+            </button>
+            <PrimaryButton
+              label={loading ? "Saving..." : "Save Changes"}
+              {loading}
+              disabled={loading || !hasChanges || !!nameError || !!emailError}
+              on:click={handleSubmit}
+            />
+          </div>
           <p class="footer-text">
-            Keep your profile up to date so other users can better understand
-            who you are.
+            Changes are saved to your profile and will be visible to other users.
           </p>
         </div>
       </form>
@@ -395,6 +415,68 @@
     -webkit-overflow-scrolling: touch;
   }
 
+  .avatar-section {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    align-items: center;
+  }
+
+  .avatar-placeholder {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  }
+
+  .avatar-default {
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 48px;
+  }
+
+  .avatar-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .upload-btn {
+    padding: 10px 24px;
+    background: #0084ff;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .upload-btn:hover:not(:disabled) {
+    background: #0073e6;
+  }
+
+  .upload-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .upload-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .avatar-input {
+    display: none;
+  }
+
   .error-message {
     display: flex;
     align-items: center;
@@ -423,7 +505,23 @@
     animation: slideDown 0.3s ease-out;
   }
 
+  .form-footer {
+    padding: 16px 24px 32px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .button-group {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+  }
+
   .secondary-button {
+    flex: 1;
     padding: 12px 24px;
     background: transparent;
     border: 2px solid rgba(0, 0, 0, 0.2);
@@ -435,6 +533,11 @@
     transition: all 0.2s ease;
   }
 
+  .secondary-button:hover:not(:disabled) {
+    border-color: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.02);
+  }
+
   .secondary-button:active:not(:disabled) {
     background: rgba(0, 0, 0, 0.05);
     transform: scale(0.98);
@@ -443,12 +546,6 @@
   .secondary-button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
-  }
-
-  .form-footer {
-    padding: 16px 24px 32px;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
-    flex-shrink: 0;
   }
 
   .footer-text {
@@ -483,6 +580,10 @@
       border-color: rgba(255, 255, 255, 0.2);
       color: #ffffff;
     }
+    .secondary-button:hover:not(:disabled) {
+      border-color: rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.02);
+    }
     .secondary-button:active:not(:disabled) {
       background: rgba(255, 255, 255, 0.05);
     }
@@ -497,19 +598,40 @@
     }
   }
 
-  @media (min-width: 768px) {
+  @media (max-width: 640px) {
     .form-content {
-      padding: 40px 32px 32px;
-      max-width: 400px;
-      margin: 0 auto;
+      padding: 24px 16px 20px;
+      gap: 20px;
+    }
+
+    .avatar-placeholder {
+      width: 100px;
+      height: 100px;
+    }
+
+    .avatar-default {
+      font-size: 40px;
+    }
+
+    .avatar-section {
+      gap: 12px;
+    }
+
+    .upload-btn {
       width: 100%;
     }
+
+    .button-group {
+      gap: 10px;
+    }
+
     .form-footer {
-      padding: 24px 32px 40px;
-      max-width: 400px;
-      margin: 0 auto;
-      width: 100%;
-      border-top: none;
+      padding: 12px 16px 24px;
+      gap: 12px;
+    }
+
+    .footer-text {
+      font-size: 11px;
     }
   }
 </style>

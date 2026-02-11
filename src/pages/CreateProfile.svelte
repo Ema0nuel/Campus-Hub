@@ -1,23 +1,44 @@
 <script>
   // @ts-nocheck
 
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import TopBar from "../components/TopBar.svelte";
   import TextInput from "../components/TextInput.svelte";
   import PrimaryButton from "../components/PrimaryButton.svelte";
-  import { updateProfile } from "../store/authStore.js";
+  import {
+    updateUserProfile,
+  } from "../services/supabaseService.js";
+  import {
+    uploadAvatarToStorage,
+    fileToBase64,
+  } from "../hook/storeData.js";
+  import { currentUserId } from "../store/authStore.js";
 
   const dispatch = createEventDispatcher();
 
   let name = "";
-  let bio = "";
-  let avatarUrl = "";
+  let email = "";
+  let avatarFile = null;
+  let avatarPreview = "";
   let loading = false;
   let error = "";
+  let success = "";
   let nameError = "";
+  let emailError = "";
+  let userId = "";
+
+  // Subscribe to user ID
+  const unsubscribe = currentUserId.subscribe((id) => {
+    userId = id;
+  });
 
   function vibrate(pattern) {
     if (navigator.vibrate) navigator.vibrate(pattern);
+  }
+
+  function validateEmail(value) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(value);
   }
 
   function handleNameChange(e) {
@@ -25,20 +46,46 @@
     nameError = !name.trim() ? "Name is required" : "";
   }
 
-  function handleBioChange(e) {
-    bio = e.detail;
+  function handleEmailChange(e) {
+    email = e.detail;
+    emailError = !validateEmail(email) ? "Enter a valid email" : "";
   }
 
-  function handleAvatarChange(e) {
-    avatarUrl = e.detail;
+  function handleAvatarSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      error = "Only JPEG, PNG, and WebP images are supported";
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      error = "Image must be smaller than 5MB";
+      return;
+    }
+
+    avatarFile = file;
+    error = "";
+
+    // Create preview
+    fileToBase64(file).then((preview) => {
+      avatarPreview = preview;
+    });
+
+    vibrate([0, 15, 10, 15]);
   }
 
   async function handleSubmit() {
     // Validate
     nameError = !name.trim() ? "Name is required" : "";
+    emailError = !validateEmail(email) ? "Enter a valid email" : "";
     error = "";
+    success = "";
 
-    if (nameError) {
+    if (nameError || emailError) {
       vibrate([0, 10, 5, 10]);
       return;
     }
@@ -47,33 +94,59 @@
     vibrate([0, 30]);
 
     try {
-      console.log("[CreateProfile] Updating profile with name:", name);
+      console.log("[CreateProfile] Updating profile with:", { name, email });
 
-      // Update profile via Supabase
-      await updateProfile({
+      let finalAvatarUrl = null;
+
+      // Upload avatar if selected
+      if (avatarFile) {
+        console.log("[CreateProfile] Uploading avatar...");
+        const { url, error: uploadError } = await uploadAvatarToStorage(
+          avatarFile,
+          userId,
+        );
+
+        if (uploadError) {
+          throw new Error(uploadError);
+        }
+
+        finalAvatarUrl = url;
+      }
+
+      // Update profile in Supabase
+      const updatedUser = await updateUserProfile(userId, {
         name: name.trim(),
-        email: avatarUrl || undefined,
-        avatar_url: avatarUrl || null,
-        status: "online",
+        email: email.trim(),
+        avatar_url: finalAvatarUrl,
+        is_active: true,
       });
 
       console.log("[CreateProfile] ✅ Profile updated successfully");
 
+      success = "Profile created successfully!";
       vibrate([0, 30, 50, 30]);
-      dispatch("complete");
+
+      // Wait a moment before redirecting
+      setTimeout(() => {
+        dispatch("complete");
+      }, 500);
     } catch (err) {
       console.error("[CreateProfile] ❌ Error:", err.message);
-      error = err.message || "Failed to update profile";
+      error = err.message || "Failed to create profile";
       loading = false;
       vibrate([0, 10, 5, 10]);
     }
   }
 
   function handleKeyPress(e) {
-    if (e.key === "Enter" && !loading && name && !nameError) {
+    if (e.key === "Enter" && !loading && name && email && !nameError && !emailError) {
       handleSubmit();
     }
   }
+
+  onMount(() => {
+    console.log("[CreateProfile] Mounted with user:", userId?.slice(0, 8));
+  });
 </script>
 
 <div class="profile-container">
@@ -81,28 +154,30 @@
 
   <form on:submit|preventDefault={handleSubmit} class="profile-form">
     <div class="form-content">
-      <!-- Avatar Preview -->
+      <!-- Avatar Upload -->
       <div class="avatar-section">
         <div class="avatar-placeholder">
-          {#if avatarUrl}
-            <img src={avatarUrl} alt="Your avatar" class="avatar-image" />
+          {#if avatarPreview}
+            <img src={avatarPreview} alt="Your avatar" class="avatar-image" />
           {:else}
-            <div class="avatar-default">
-              <svg viewBox="0 0 24 24" width="48" height="48">
-                <path
-                  fill="currentColor"
-                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"
-                />
-              </svg>
-            </div>
+            <div class="avatar-default">👤</div>
           {/if}
         </div>
-        <input
-          type="text"
-          placeholder="Avatar URL (optional)"
-          bind:value={avatarUrl}
-          class="avatar-input"
+        <button
+          type="button"
+          class="upload-btn"
+          on:click={() => document.querySelector(".avatar-input")?.click()}
           disabled={loading}
+        >
+          {avatarPreview ? "Change Photo" : "Add Photo"}
+        </button>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          on:change={handleAvatarSelect}
+          disabled={loading}
+          class="avatar-input"
+          hidden
         />
       </div>
 
@@ -117,39 +192,41 @@
         on:keypress={handleKeyPress}
       />
 
-      <!-- Bio Input (Optional) -->
-      <div class="bio-input-wrapper">
-        <label for="bio" class="label">Bio (Optional)</label>
-        <textarea
-          id="bio"
-          placeholder="Tell us about yourself..."
-          bind:value={bio}
-          disabled={loading}
-          class="bio-textarea"
-          rows="3"
-        />
-      </div>
+      <!-- Email Input (Required) -->
+      <TextInput
+        label="Email Address"
+        type="email"
+        placeholder="Enter your email"
+        value={email}
+        error={emailError}
+        disabled={loading}
+        on:change={handleEmailChange}
+        on:keypress={handleKeyPress}
+      />
 
       <!-- Error Message -->
       {#if error}
         <div class="error-message" role="alert">
           <svg viewBox="0 0 24 24" width="16" height="16">
-            <circle
-              cx="12"
-              cy="12"
-              r="10"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            />
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M12 8v4m0 4v.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          {error}
+        </div>
+      {/if}
+
+      <!-- Success Message -->
+      {#if success}
+        <div class="success-message" role="status">
+          <svg viewBox="0 0 24 24" width="16" height="16">
             <path
-              d="M12 8v4M12 16h.01"
+              d="M9 16.2L4.8 12m0 0-1.4-1.4m1.4 1.4L9 19m7-7v7a2 2 0 01-2 2H7a2 2 0 01-2-2V9"
               stroke="currentColor"
               stroke-width="2"
               stroke-linecap="round"
             />
           </svg>
-          {error}
+          {success}
         </div>
       {/if}
 
@@ -157,15 +234,14 @@
       <PrimaryButton
         label={loading ? "Saving..." : "Complete Profile"}
         {loading}
-        disabled={loading || !name || !!nameError}
+        disabled={loading || !name || !email || !!nameError || !!emailError}
         on:click={handleSubmit}
       />
     </div>
 
     <div class="form-footer">
       <p class="footer-text">
-        You can update your profile anytime. Your information helps other users
-        connect with you.
+        Complete your profile to start chatting with other users. You can update your information anytime.
       </p>
     </div>
   </form>
@@ -201,13 +277,13 @@
   .avatar-section {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
     align-items: center;
   }
 
   .avatar-placeholder {
-    width: 100px;
-    height: 100px;
+    width: 120px;
+    height: 120px;
     border-radius: 50%;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     display: flex;
@@ -215,6 +291,7 @@
     justify-content: center;
     overflow: hidden;
     box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+    position: relative;
   }
 
   .avatar-default {
@@ -222,6 +299,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    font-size: 48px;
   }
 
   .avatar-image {
@@ -230,57 +308,33 @@
     object-fit: cover;
   }
 
-  .avatar-input {
-    width: 100%;
-    padding: 12px 16px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
+  .upload-btn {
+    padding: 10px 24px;
+    background: #0084ff;
+    color: white;
+    border: none;
     border-radius: 8px;
-    font-size: 14px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  .avatar-input:focus {
-    border-color: #0084ff;
-  }
-
-  .avatar-input:disabled {
-    background: rgba(0, 0, 0, 0.05);
-    cursor: not-allowed;
-  }
-
-  :global(.label) {
-    display: block;
     font-size: 14px;
     font-weight: 600;
-    color: rgba(0, 0, 0, 0.8);
-    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
   }
 
-  .bio-input-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .upload-btn:hover:not(:disabled) {
+    background: #0073e6;
   }
 
-  .bio-textarea {
-    padding: 12px 16px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-    border-radius: 8px;
-    font-size: 14px;
-    font-family: inherit;
-    resize: vertical;
-    outline: none;
-    transition: border-color 0.2s;
+  .upload-btn:active:not(:disabled) {
+    transform: scale(0.98);
   }
 
-  .bio-textarea:focus {
-    border-color: #0084ff;
-  }
-
-  .bio-textarea:disabled {
-    background: rgba(0, 0, 0, 0.05);
+  .upload-btn:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .avatar-input {
+    display: none;
   }
 
   .error-message {
@@ -292,6 +346,20 @@
     border: 1px solid rgba(239, 68, 68, 0.3);
     border-radius: 8px;
     color: #ef4444;
+    font-size: 13px;
+    font-weight: 500;
+    animation: slideDown 0.3s ease-out;
+  }
+
+  .success-message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 8px;
+    color: #22c55e;
     font-size: 13px;
     font-weight: 500;
     animation: slideDown 0.3s ease-out;
@@ -327,26 +395,14 @@
       background: #0a0a0a;
     }
 
-    .avatar-input,
-    .bio-textarea {
-      background: rgba(255, 255, 255, 0.05);
-      border-color: rgba(255, 255, 255, 0.1);
-      color: #fff;
-    }
-
-    .avatar-input:focus,
-    .bio-textarea:focus {
-      border-color: #0084ff;
-    }
-
-    .avatar-input:disabled,
-    .bio-textarea:disabled {
-      background: rgba(255, 255, 255, 0.02);
-    }
-
     .error-message {
       background: rgba(239, 68, 68, 0.15);
       border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .success-message {
+      background: rgba(34, 197, 94, 0.15);
+      border-color: rgba(34, 197, 94, 0.4);
     }
 
     .form-footer {
@@ -356,9 +412,37 @@
     .footer-text {
       color: rgba(255, 255, 255, 0.6);
     }
+  }
 
-    :global(.label) {
-      color: rgba(255, 255, 255, 0.9);
+  @media (max-width: 640px) {
+    .form-content {
+      padding: 24px 16px;
+      gap: 20px;
+    }
+
+    .avatar-placeholder {
+      width: 100px;
+      height: 100px;
+    }
+
+    .avatar-default {
+      font-size: 40px;
+    }
+
+    .avatar-section {
+      gap: 12px;
+    }
+
+    .upload-btn {
+      width: 100%;
+    }
+
+    .form-footer {
+      padding: 12px 16px 24px;
+    }
+
+    .footer-text {
+      font-size: 11px;
     }
   }
 </style>

@@ -7,11 +7,12 @@
   import FloatingActionButton from "../components/FloatingActionButton.svelte";
   import NewConversationModal from "../components/NewConversationModal.svelte";
   import {
-    supabase,
     subscribeToConversations,
     unsubscribeFromChannel,
   } from "../lib/supabaseClient.js";
+  import { getUserConversations } from "../services/supabaseService.js";
   import { currentUserId, logout } from "../store/authStore.js";
+  import { getRelativeTime } from "../lib/timeUtils.js";
 
   const dispatch = createEventDispatcher();
 
@@ -41,65 +42,28 @@
         userId.slice(0, 8),
       );
 
-      // Query conversations table directly from Supabase
-      const { data, error: fetchError } = await supabase
-        .from("conversations")
-        .select(
-          `
-          id,
-          user_id,
-          participant_id,
-          last_message_preview,
-          last_message_at,
-          unread_count,
-          is_archived
-        `,
-        )
-        .eq("user_id", userId)
-        .eq("is_archived", false)
-        .order("last_message_at", { ascending: false });
+      // Fetch all conversations with participant details from Supabase
+      const conversationsList = await getUserConversations(userId);
 
-      if (fetchError) throw fetchError;
-
-      // Fetch participant details for each conversation
-      const conversationsWithDetails = await Promise.all(
-        (data || []).map(async (conv) => {
-          const { data: participant, error: partError } = await supabase
-            .from("users")
-            .select("id, name, phone_number, avatar_url, status")
-            .eq("id", conv.participant_id)
-            .maybeSingle();
-
-          if (partError) {
-            console.warn(
-              "[Conversation] ⚠️ Participant fetch error:",
-              partError.message,
-            );
-          }
-
-          return {
-            id: conv.id,
-            participant_id: conv.participant_id,
-            participant_name: participant?.name || "User",
-            participant_phone: participant?.phone_number || "",
-            participant_avatar: participant?.avatar_url || null,
-            participant_status: participant?.status || "offline",
-            last_message_preview: conv.last_message_preview || "",
-            last_message_at: conv.last_message_at,
-            unread_count: conv.unread_count || 0,
-          };
-        }),
-      );
-
-      conversations = conversationsWithDetails.map((conv) => ({
-        ...conv,
+      // Transform data for display
+      conversations = conversationsList.map((conv) => ({
+        id: conv.id,
+        participant_id: conv.participant_id,
+        participant_name: conv.participant_name || "Unknown",
+        participant_phone: conv.participant_phone || "",
+        participant_avatar: conv.participant_avatar || null,
+        participant_status: conv.participant_status || "offline",
+        last_message_preview: conv.last_message_preview || "No messages yet",
+        last_message_at: conv.last_message_at,
+        unread_count: conv.unread_count || 0,
+        is_archived: conv.is_archived || false,
+        created_at: conv.created_at,
         users: {
-          id: conv.participant_id,
-          name: conv.participant_name,
-          avatar_url: conv.participant_avatar,
-          status: conv.participant_status,
-          phone_number: conv.participant_phone,
+          name: conv.participant_name || "Unknown",
+          phone: conv.participant_phone || "",
+          avatar_url: conv.participant_avatar || null,
           online: conv.participant_status === "online",
+          id: conv.participant_id,
         },
       }));
 
@@ -123,28 +87,76 @@
     if (!userId) return;
 
     try {
-      console.log("[Conversation] 📡 Subscribing to realtime updates");
+      console.log("[Conversation] 📡 Subscribing to realtime updates (silent)");
 
       const onUpdate = (payload) => {
-        console.log("[Conversation] 🔄 Update event:", payload.eventType);
-
-        // Reload conversations when any update occurs
-        loadConversations();
+        console.log(
+          "[Conversation] 🔄 Real-time event (silent update):",
+          payload.eventType,
+        );
+        // Silently reload conversations WITHOUT showing spinner
+        loadConversationsQuiet();
       };
 
       realtimeSubscription = await subscribeToConversations(userId, onUpdate);
-      console.log("[Conversation] ✅ Realtime subscription active");
+      console.log(
+        "[Conversation] ✅ Realtime subscription active (silent mode)",
+      );
     } catch (err) {
       console.warn(
-        "[Conversation] ⚠️ Realtime subscription failed:",
+        "[Conversation] ⚠️ Realtime subscription failed (continuing offline):",
         err.message,
       );
     }
   }
 
+  /**
+   * Load conversations silently without showing spinner
+   */
+  async function loadConversationsQuiet() {
+    try {
+      console.log("[Conversation] 🔄 Silently updating conversation list");
+      const conversationsList = await getUserConversations(userId);
+
+      conversations = conversationsList.map((conv) => ({
+        id: conv.id,
+        participant_id: conv.participant_id,
+        participant_name: conv.participant_name || "Unknown",
+        participant_phone: conv.participant_phone || "",
+        participant_avatar: conv.participant_avatar || null,
+        participant_status: conv.participant_status || "offline",
+        last_message_preview: conv.last_message_preview || "No messages yet",
+        last_message_at: conv.last_message_at,
+        unread_count: conv.unread_count || 0,
+        is_archived: conv.is_archived || false,
+        created_at: conv.created_at,
+        users: {
+          name: conv.participant_name || "Unknown",
+          phone: conv.participant_phone || "",
+          avatar_url: conv.participant_avatar || null,
+          online: conv.participant_status === "online",
+          id: conv.participant_id,
+        },
+      }));
+
+      console.log(
+        "[Conversation] ✅ Updated (silent):",
+        conversations.length,
+        "conversations",
+      );
+    } catch (err) {
+      console.error("[Conversation] ❌ Silent update failed:", err.message);
+    }
+  }
+
   function handleConversationSelect(conv) {
     console.log("[Conversation] ✓ Selected:", conv.participant_name);
-    dispatch("conversation-selected", conv);
+    dispatch("conversation-selected", {
+      participant_id: conv.participant_id,
+      participant_name: conv.participant_name,
+      participant_phone: conv.participant_phone,
+      participant_avatar: conv.participant_avatar,
+    });
   }
 
   function handleNewConversation() {
@@ -191,7 +203,7 @@
   <div class="chat-list-wrapper">
     {#if error}
       <div class="error-message">
-        <span>⚠️ {error}</span>
+        <span>{error}</span>
         <button on:click={loadConversations}>Retry</button>
       </div>
     {:else if loading}
@@ -201,43 +213,47 @@
       </div>
     {:else if conversations.length === 0}
       <div class="empty-state">
-        <svg
-          class="empty-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-        >
-          <path
-            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"
-          />
-          <path
-            d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"
-          />
-        </svg>
+        <div class="empty-icon">💬</div>
         <p>No conversations yet</p>
-        <span>Create one to get started!</span>
+        <span>Start a new chat to begin messaging</span>
       </div>
     {:else}
       <div class="conversation-list">
-        {#each conversations as conv (conv.id)}
+        {#each conversations as conversation (conversation.id)}
           <button
             class="conversation-item"
-            on:click={() => handleConversationSelect(conv)}
-            on:keydown={(e) =>
-              e.key === "Enter" && handleConversationSelect(conv)}
-            role="button"
-            tabindex="0"
+            on:click={() => handleConversationSelect(conversation)}
           >
-            <ConversationGlassItem
-              name={conv.participant_name}
-              phone={conv.participant_phone}
-              preview={conv.last_message_preview}
-              timestamp={conv.last_message_at}
-              unreadCount={conv.unread_count}
-              avatar={conv.participant_avatar}
-              status={conv.participant_status}
-            />
+            <div class="avatar-container">
+              {#if conversation.users.avatar_url}
+                <img
+                  src={conversation.users.avatar_url}
+                  alt={conversation.users.name}
+                  class="avatar"
+                />
+              {:else}
+                <div class="avatar-placeholder">
+                  {conversation.users.name.charAt(0).toUpperCase()}
+                </div>
+              {/if}
+              {#if conversation.users.online}
+                <div class="online-indicator" title="Online" />
+              {/if}
+            </div>
+
+            <div class="conversation-content">
+              <div class="conversation-header">
+                <h3 class="conversation-name">{conversation.users.name}</h3>
+                <time class="timestamp">
+                  {getRelativeTime(conversation.last_message_at)}
+                </time>
+              </div>
+              <p class="last-message">{conversation.last_message_preview}</p>
+            </div>
+
+            {#if conversation.unread_count > 0}
+              <div class="unread-badge">{conversation.unread_count}</div>
+            {/if}
           </button>
         {/each}
       </div>
@@ -260,17 +276,8 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    padding: 8px 0;
-  }
-
-  /* Mobile tweaks */
-  @media (max-width: 640px) {
-    .chat-list-wrapper {
-      padding: 6px 0;
-    }
-    .conversation-item {
-      padding: 8px 12px;
-    }
+    padding: 0;
+    background: #fff;
   }
 
   .error-message {
@@ -286,7 +293,6 @@
     );
     border: 1px solid rgba(244, 67, 54, 0.15);
     border-radius: 12px;
-    backdrop-filter: blur(10px);
     gap: 12px;
   }
 
@@ -354,23 +360,21 @@
   }
 
   .empty-icon {
-    width: 64px;
-    height: 64px;
-    color: #ddd;
-    opacity: 0.5;
+    font-size: 48px;
+    opacity: 0.6;
     margin-bottom: 8px;
   }
 
   .empty-state p {
     font-size: 16px;
     font-weight: 500;
-    color: #999;
+    color: #333;
     margin: 0;
   }
 
   .empty-state span {
     font-size: 13px;
-    color: #bbb;
+    color: #999;
   }
 
   .conversation-list {
@@ -382,12 +386,17 @@
   .conversation-item {
     background: none;
     border: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
     cursor: pointer;
-    padding: 0;
+    padding: 12px 16px;
     text-align: left;
     margin: 0;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
     transition: background-color 0.2s;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .conversation-item:hover {
@@ -398,35 +407,226 @@
     background: rgba(25, 103, 210, 0.06);
   }
 
+  .avatar-container {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .avatar-placeholder {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: 600;
+    font-size: 20px;
+  }
+
+  .online-indicator {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #31a24c;
+    border: 3px solid #fff;
+  }
+
+  .conversation-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .conversation-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .conversation-name {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #000;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .timestamp {
+    font-size: 12px;
+    color: #999;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .last-message {
+    margin: 0;
+    font-size: 13px;
+    color: #65676b;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .unread-badge {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: #0084ff;
+    color: white;
+    border-radius: 50%;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .realtime-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: rgba(0, 132, 255, 0.1);
+    border-bottom: 1px solid rgba(0, 132, 255, 0.2);
+    color: #0084ff;
+    font-size: 13px;
+    font-weight: 500;
+    animation: slideDown 0.3s ease-out;
+  }
+
+  .realtime-status.updating .spinner-icon {
+    width: 14px;
+    height: 14px;
+    display: inline-block;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .realtime-status span {
+    flex: 1;
+  }
+
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   @media (prefers-color-scheme: dark) {
+    .realtime-status {
+      background: rgba(0, 132, 255, 0.15);
+      border-bottom-color: rgba(0, 132, 255, 0.25);
+      color: #0084ff;
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .chat-list-wrapper {
+      background: #0a0a0a;
+    }
+
     .error-message {
       background: linear-gradient(
         135deg,
-        rgba(244, 67, 54, 0.1),
-        rgba(229, 57, 53, 0.05)
+        rgba(212, 47, 47, 0.15),
+        rgba(229, 57, 53, 0.08)
       );
       border-color: rgba(244, 67, 54, 0.2);
     }
 
-    .empty-state p,
+    .empty-state p {
+      color: #aaa;
+    }
+
+    .empty-state span {
+      color: #666;
+    }
+
     .loading-state {
       color: #aaa;
     }
 
-    .empty-icon {
-      color: #444;
+    .conversation-item {
+      border-bottom-color: rgba(255, 255, 255, 0.05);
     }
 
     .conversation-item:hover {
-      background: linear-gradient(
-        90deg,
-        rgba(100, 181, 246, 0.12),
-        transparent
-      );
+      background: linear-gradient(90deg, rgba(8, 132, 255, 0.08), transparent);
     }
 
     .conversation-item:active {
-      background: rgba(33, 150, 243, 0.1);
+      background: rgba(8, 132, 255, 0.1);
+    }
+
+    .conversation-name {
+      color: #fff;
+    }
+
+    .last-message {
+      color: #aaa;
+    }
+
+    .timestamp {
+      color: #666;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .conversation-item {
+      padding: 10px 12px;
+      gap: 10px;
+    }
+
+    .avatar,
+    .avatar-placeholder {
+      width: 48px;
+      height: 48px;
+      font-size: 18px;
+    }
+
+    .conversation-name {
+      font-size: 14px;
+    }
+
+    .last-message {
+      font-size: 12px;
+    }
+
+    .timestamp {
+      font-size: 11px;
+    }
+
+    .unread-badge {
+      width: 18px;
+      height: 18px;
+      font-size: 11px;
     }
   }
 </style>

@@ -95,6 +95,7 @@
       participantId={selectedConversationData.participant_id}
       participantName={selectedConversationData.participant_name || "User"}
       participantPhone={selectedConversationData.participant_phone || ""}
+      participantAvatar={selectedConversationData.participant_avatar || ""}
       on:back={handleChatClosed}
     />
   {/if}

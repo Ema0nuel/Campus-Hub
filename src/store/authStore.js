@@ -59,6 +59,8 @@ export async function checkPhoneAndLogin(phoneNumber) {
         if (user) {
             // User exists - log them in
             console.log("[Auth] ✅ User found:", user.id.slice(0, 8));
+            // Cache user to localStorage for persistence
+            localStorage.setItem("user_cache", JSON.stringify(user));
             authState.update((s) => ({
                 ...s,
                 isAuthenticated: true,

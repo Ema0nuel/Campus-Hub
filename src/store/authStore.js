@@ -20,6 +20,7 @@ export const isLoading = derived(authState, (s) => s.isLoading);
 export const isInitializing = derived(authState, (s) => s.isInitializing);
 export const currentUser = derived(authState, (s) => s.user);
 export const currentUserId = derived(authState, (s) => s.user?.id);
+export const currentUserPhone = derived(authState, (s) => s.user?.phone_number);
 export const authError = derived(authState, (s) => s.error);
 export const isProfileComplete = derived(authState, (s) => s.profileComplete);
 
@@ -33,6 +34,31 @@ export function getCurrentUserIdSync() {
     });
     unsubscribe();
     return userId;
+}
+
+/**
+ * Get current user phone synchronously
+ */
+export function getCurrentUserPhoneSync() {
+    let phone = null;
+    const unsubscribe = currentUserPhone.subscribe((p) => {
+        phone = p;
+    });
+    unsubscribe();
+    return phone;
+}
+
+/**
+ * Update user in auth state after creation
+ */
+export function setAuthUser(user) {
+    authState.update((s) => ({
+        ...s,
+        user,
+        isAuthenticated: true,
+        profileComplete: !!user?.name,
+    }));
+    localStorage.setItem("user_cache", JSON.stringify(user));
 }
 
 /**

@@ -1,18 +1,20 @@
 <script>
   // @ts-nocheck
 
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onMount, onDestroy } from "svelte";
   import TopBar from "../components/TopBar.svelte";
   import TextInput from "../components/TextInput.svelte";
   import PrimaryButton from "../components/PrimaryButton.svelte";
   import {
     updateUserProfile,
+    createUser,
   } from "../services/supabaseService.js";
+  import { uploadAvatarToStorage, fileToBase64 } from "../hook/storeData.js";
   import {
-    uploadAvatarToStorage,
-    fileToBase64,
-  } from "../hook/storeData.js";
-  import { currentUserId } from "../store/authStore.js";
+    currentUserId,
+    currentUserPhone,
+    setAuthUser,
+  } from "../store/authStore.js";
 
   const dispatch = createEventDispatcher();
 
@@ -26,10 +28,15 @@
   let nameError = "";
   let emailError = "";
   let userId = "";
+  let userPhone = "";
 
-  // Subscribe to user ID
-  const unsubscribe = currentUserId.subscribe((id) => {
+  // Subscribe to user ID and phone
+  const unsubscribeUserId = currentUserId.subscribe((id) => {
     userId = id;
+  });
+
+  const unsubscribePhone = currentUserPhone.subscribe((phone) => {
+    userPhone = phone;
   });
 
   function vibrate(pattern) {
@@ -94,16 +101,50 @@
     vibrate([0, 30]);
 
     try {
-      console.log("[CreateProfile] Updating profile with:", { name, email });
+      console.log("[CreateProfile] Starting profile creation with:", {
+        name,
+        email,
+        userId,
+        userPhone,
+      });
+
+      let currentUserId = userId;
+
+      // If no userId, create user in database first
+      if (!currentUserId && userPhone) {
+        console.log("[CreateProfile] Creating new user with phone:", userPhone);
+        const newUser = await createUser({
+          phone_number: userPhone,
+          name: name.trim(),
+          email: email.trim(),
+          status: "online",
+        });
+
+        currentUserId = newUser.id;
+        console.log(
+          "[CreateProfile] 🎉 New user created with ID:",
+          currentUserId.slice(0, 8),
+        );
+
+        // Update auth store with new user
+        setAuthUser(newUser);
+      }
+
+      if (!currentUserId) {
+        throw new Error("Failed to get or create user ID");
+      }
 
       let finalAvatarUrl = null;
 
       // Upload avatar if selected
       if (avatarFile) {
-        console.log("[CreateProfile] Uploading avatar...");
+        console.log(
+          "[CreateProfile] Uploading avatar for:",
+          currentUserId.slice(0, 8),
+        );
         const { url, error: uploadError } = await uploadAvatarToStorage(
           avatarFile,
-          userId,
+          currentUserId,
         );
 
         if (uploadError) {
@@ -113,15 +154,18 @@
         finalAvatarUrl = url;
       }
 
-      // Update profile in Supabase
-      const updatedUser = await updateUserProfile(userId, {
+      // Update profile in Supabase with avatar URL
+      const updatedUser = await updateUserProfile(currentUserId, {
         name: name.trim(),
         email: email.trim(),
         avatar_url: finalAvatarUrl,
         is_active: true,
       });
 
-      console.log("[CreateProfile] ✅ Profile updated successfully");
+      // Update auth store with updated user
+      setAuthUser(updatedUser);
+
+      console.log("[CreateProfile] ✅ Profile created successfully");
 
       success = "Profile created successfully!";
       vibrate([0, 30, 50, 30]);
@@ -139,13 +183,30 @@
   }
 
   function handleKeyPress(e) {
-    if (e.key === "Enter" && !loading && name && email && !nameError && !emailError) {
+    if (
+      e.key === "Enter" &&
+      !loading &&
+      name &&
+      email &&
+      !nameError &&
+      !emailError
+    ) {
       handleSubmit();
     }
   }
 
   onMount(() => {
-    console.log("[CreateProfile] Mounted with user:", userId?.slice(0, 8));
+    console.log(
+      "[CreateProfile] Mounted with user:",
+      userId?.slice(0, 8),
+      "phone:",
+      userPhone?.slice(0, 5),
+    );
+  });
+
+  onDestroy(() => {
+    unsubscribeUserId();
+    unsubscribePhone();
   });
 </script>
 
@@ -208,8 +269,20 @@
       {#if error}
         <div class="error-message" role="alert">
           <svg viewBox="0 0 24 24" width="16" height="16">
-            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2" />
-            <path d="M12 8v4m0 4v.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            <circle
+              cx="12"
+              cy="12"
+              r="10"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            />
+            <path
+              d="M12 8v4m0 4v.01"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
           </svg>
           {error}
         </div>
@@ -234,14 +307,20 @@
       <PrimaryButton
         label={loading ? "Saving..." : "Complete Profile"}
         {loading}
-        disabled={loading || !name || !email || !!nameError || !!emailError}
+        disabled={loading ||
+          !name ||
+          !email ||
+          !!nameError ||
+          !!emailError ||
+          (!userId && !userPhone)}
         on:click={handleSubmit}
       />
     </div>
 
     <div class="form-footer">
       <p class="footer-text">
-        Complete your profile to start chatting with other users. You can update your information anytime.
+        Complete your profile to start chatting with other users. You can update
+        your information anytime.
       </p>
     </div>
   </form>

@@ -5,7 +5,6 @@
 
   const dispatch = createEventDispatcher();
 
-  export let disabled = false;
   export let conversationId = "";
   export let userId = "";
 
@@ -15,7 +14,7 @@
   let typingTimeoutId = null;
 
   async function handleSend() {
-    if (!messageText.trim() || disabled) return;
+    if (!messageText.trim()) return;
 
     // Stop typing indicator before sending
     await stopTyping();
@@ -96,13 +95,12 @@
       on:input={handleInput}
       on:blur={handleBlur}
       placeholder="Type a message..."
-      {disabled}
       rows="1"
       aria-label="Message input"
     />
     <button
       on:click={handleSend}
-      disabled={disabled || !messageText.trim()}
+      disabled={!messageText.trim()}
       class="send-btn"
       title="Send (Enter)"
       aria-label="Send message"

@@ -38,10 +38,11 @@
   let userConversationId = "";
   let participantConversationId = "";
   let error = "";
-  let isSending = false;
   let isParticipantTyping = false;
   let typingTimeoutId = null;
   let typingSubscription = null;
+  let subscriptionAttempts = 0;
+  const MAX_SUBSCRIPTION_ATTEMPTS = 3;
 
   /**
    * Load unified messages from BOTH conversations
@@ -77,6 +78,9 @@
         received: messages.filter((m) => m.role === "receiver").length,
       });
 
+      // Silently activate typing subscription after loading conversation IDs
+      subscribeToConversationTyping();
+
       // Scroll to bottom after render
       await tick();
       scrollToBottom();
@@ -106,8 +110,6 @@
     }
 
     try {
-      isSending = true;
-
       console.log("[ChatWindow] 📤 Sending message to", participantId);
       console.log(
         "[ChatWindow] Using conversation:",
@@ -138,8 +140,6 @@
     } catch (err) {
       console.error("[ChatWindow] ❌ Failed to send message:", err);
       error = err.message || "Failed to send message";
-    } finally {
-      isSending = false;
     }
   }
 
@@ -188,19 +188,25 @@
    * Subscribe to real-time typing indicators from typing_indicators table
    */
   function subscribeToConversationTyping() {
-    console.log("[ChatWindow] 📡 Subscribing to typing indicators table");
+    console.log("[ChatWindow] 📡 Initializing typing subscription");
 
     try {
       if (!userConversationId || !participantConversationId) {
-        console.warn(
-          "[ChatWindow] ⚠️ Conversation IDs not ready for typing subscription",
-        );
+        console.warn("[ChatWindow] ⚠️ Conversation IDs not ready");
         return;
       }
 
-      // Subscribe to both conversation IDs in typing_indicators table
+      // Clean up previous subscription if exists
+      if (typingSubscription) {
+        console.log("[ChatWindow] 🧹 Cleaning up old subscription");
+        unsubscribeFromChannel(typingSubscription);
+        typingSubscription = null;
+      }
+
+      // Always create fresh subscription with unique channel name
+      const channelName = `typing:${userConversationId}:${participantConversationId}:${Date.now()}`;
       const channel = supabase
-        .channel(`typing:${userConversationId}:${participantConversationId}`)
+        .channel(channelName, { config: { broadcast: { self: false } } })
         .on(
           "postgres_changes",
           {
@@ -209,10 +215,7 @@
             table: "typing_indicators",
             filter: `conversation_id=eq.${userConversationId}`,
           },
-          (payload) => {
-            console.log("[ChatWindow] 📝 Typing event from table:", payload);
-            handleTypingIndication(payload);
-          },
+          (payload) => handleTypingIndication(payload),
         )
         .on(
           "postgres_changes",
@@ -222,23 +225,26 @@
             table: "typing_indicators",
             filter: `conversation_id=eq.${participantConversationId}`,
           },
-          (payload) => {
-            console.log(
-              "[ChatWindow] 📝 Typing event from participant conv:",
-              payload,
-            );
-            handleTypingIndication(payload);
-          },
+          (payload) => handleTypingIndication(payload),
         )
         .subscribe((status) => {
           if (status === "SUBSCRIBED") {
-            console.log("[ChatWindow] ✅ Typing subscription active");
+            console.log("[ChatWindow] ✅ Typing subscription ready");
+            subscriptionAttempts = 0;
+          } else if (status === "CHANNEL_ERROR") {
+            if (subscriptionAttempts < MAX_SUBSCRIPTION_ATTEMPTS) {
+              subscriptionAttempts++;
+              console.log(
+                `[ChatWindow] 🔄 Retry (${subscriptionAttempts}/${MAX_SUBSCRIPTION_ATTEMPTS})`,
+              );
+              setTimeout(() => subscribeToConversationTyping(), 1000);
+            }
           }
         });
 
       typingSubscription = channel;
     } catch (err) {
-      console.error("[ChatWindow] ❌ Failed to subscribe to typing:", err);
+      console.error("[ChatWindow] ❌ Subscription error:", err.message);
     }
   }
 
@@ -314,11 +320,6 @@
     loadMessages();
     setupSocketListeners();
 
-    // Subscribe to typing indicators after messages load
-    setTimeout(() => {
-      subscribeToConversationTyping();
-    }, 500);
-
     // Cleanup listeners on unmount
     return () => {
       socketOff("message:received");
@@ -344,6 +345,18 @@
   // Reload when participant changes
   $: if (participantId && currentUserId) {
     loadMessages();
+  }
+
+  // Ensure typing subscription is re-activated when conversation IDs are available
+  $: if (
+    userConversationId &&
+    participantConversationId &&
+    !typingSubscription
+  ) {
+    console.log(
+      "[ChatWindow] 📡 Silently ensuring typing subscription is active",
+    );
+    subscribeToConversationTyping();
   }
 </script>
 
@@ -401,9 +414,8 @@
     {/if}
   </div>
 
-  <!-- Input - Always accessible -->
+  <!-- Input - Always Active -->
   <ChatInput
-    disabled={isSending}
     conversationId={userConversationId}
     userId={currentUserId}
     on:send={handleSendMessage}
